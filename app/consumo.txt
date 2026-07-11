@@ -1,0 +1,16 @@
+consumo = cpu_watts
+consumo += ram_modules * 1.0       # W por módulo DDR4
+consumo += ssd_count * 0.5         # W por SSD SATA/NVMe
+consumo += hdd25_count * 1.5       # W por HDD 2,5"
+consumo += hdd35_count * 6.0       # W por HDD 3,5"
+consumo += 2.0                     # placa, chipset, Wi-Fi...
+consumo += pantalla_w              # solo en portátiles
+
+| Tipo              | Valor recomendado |
+| ----------------- | ----------------: |
+| SSD SATA          |             0,5 W |
+| SSD NVMe          |             1,0 W |
+| HDD 2,5"          |             1,5 W |
+| HDD 3,5" 5400 rpm |               5 W |
+| HDD 3,5" 7200 rpm |               7 W |
+

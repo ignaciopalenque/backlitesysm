@@ -1,0 +1,160 @@
+import sqlite3
+from datetime import datetime
+
+class MetricsDB:
+    def __init__(self, db_path='litesysm.db'):
+        self.db_path = db_path
+        self.init_db()
+    
+    def init_db(self):
+        """Crear tablas si no existen"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT (datetime('now', 'localtime')),
+                cpu_percent REAL,
+                cpu_temp REAL,
+                ram_percent REAL,
+                ram_used INTEGER,
+                disk_percent REAL,
+                disk_used INTEGER,
+                power_consumption REAL
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS system_info (
+                id INTEGER PRIMARY KEY,
+                hostname TEXT,
+                os TEXT,
+                cpu_name TEXT,
+                disk_total INTEGER,
+                ram_total INTEGER,
+                gpu_name TEXT,
+                vram_total INTEGER,
+                last_update DATETIME
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS diary_cost (
+                date TEXT PRIMARY KEY,
+                energy_kwh REAL DEFAULT 0,
+                hours REAL DEFAULT 0
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+
+    
+    def is_table_empty(self, table_name):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Buscamos solo 1 registro. Si existe, la tabla no está vacía.
+        cursor.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+        result = cursor.fetchone()
+        
+        conn.close()
+        return result is None  # Retorna True si está vacía, False si tiene datos
+    
+    def insert_metric(self, data):
+        """Insertar una nueva métrica"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO metrics 
+            (cpu_percent, cpu_temp, ram_percent, ram_used, 
+             disk_percent, disk_used, power_consumption)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data['cpu_percent'],
+            data['cpu_temp'],
+            data['ram_percent'],
+            data['ram_used'],
+            data['disk_percent'],
+            data['disk_used'],
+            data['power_consumption']
+        ))
+        
+        conn.commit()
+        conn.close()
+
+
+    def insert_cost(self, data):
+        """Insertar un coste diario de energía"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO diary_cost (date, energy_kwh, hours)
+            VALUES (?, ?, ?) 
+            ON CONFLICT(date) 
+            DO UPDATE SET 
+                energy_kwh = energy_kwh + excluded.energy_kwh,
+                hours = hours + excluded.hours
+        ''', (
+            data['date'],
+            data['energy_kwh'],
+            data['hours']
+        ))
+        
+        conn.commit()
+        conn.close()
+
+
+    def insert_info(self, data):
+        """Insertar una nueva métrica"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO system_info 
+            (hostname, os, cpu_name, disk_total, 
+             ram_total, gpu_name, vram_total, last_update)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data['hostname'],
+            data['os'],
+            data['cpu_name'],
+            data['disk_total'],
+            data['ram_total'],
+            data['gpu_name'],
+            data['vram_total'],
+            data['last_update']
+        ))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_metrics(self, hours=24):
+        """Obtener métricas de las últimas N horas"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute(f'''
+            SELECT * FROM metrics 
+            WHERE timestamp > datetime('now', '-{hours} hours')
+            ORDER BY timestamp DESC
+        ''')
+        
+        metrics = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return metrics
+    
+    def get_latest_metric(self):
+        """Obtener la última métrica registrada"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM metrics ORDER BY timestamp DESC LIMIT 1')
+        metric = dict(cursor.fetchone() or {})
+        conn.close()
+        return metric
