@@ -92,6 +92,14 @@ def get_latest_metrics():
         return jsonify(metric)
     return jsonify({'error': 'No metrics available'}), 404
 
+@app.route('/api/system/info', methods=['GET'])
+def get_system_info():
+    """Obtener la última métrica"""
+    info = db.get_system_info()
+    if info:
+        return jsonify(info)
+    return jsonify({'error': 'No info available'}), 404
+
 @app.route('/api/metrics/history', methods=['GET'])
 def get_metrics_history():
     """Obtener histórico de métricas (últimas 24 horas)"""

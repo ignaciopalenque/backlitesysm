@@ -69,13 +69,14 @@ class SystemCollector:
     def get_cpu_metrics():
         """Obtener métricas de CPU"""
         cpu_percent = psutil.cpu_percent(interval=1)
-        cpu_freq = psutil.cpu_freq().current
+        cpu_freq = f"{psutil.cpu_freq().current:.0f}"
         cpu_freq_max = psutil.cpu_freq().max
         cpu_count = psutil.cpu_count()
         
         return {
             'percent': cpu_percent,
             'frequency': cpu_freq,
+            'frequency_max': cpu_freq_max,
             'count': cpu_count
         }
     
@@ -264,6 +265,8 @@ class SystemCollector:
         return {
             'timestamp': datetime.now().isoformat(),
             'cpu_percent': cpu['percent'],
+            'cpu_freq': cpu['frequency'],
+            'cpu_freq_max': cpu['frequency_max'],
             'cpu_temp': temp,
             'ram_percent': ram['percent'],
             'ram_used': ram['used'],

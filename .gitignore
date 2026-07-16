@@ -1,1 +1,2 @@
-./app/litesysm.db
+app/litesysm.db
+*.db

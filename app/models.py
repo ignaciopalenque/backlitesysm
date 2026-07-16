@@ -16,6 +16,8 @@ class MetricsDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT (datetime('now', 'localtime')),
                 cpu_percent REAL,
+                cpu_freq REAL,
+                cpu_freq_max REAL,
                 cpu_temp REAL,
                 ram_percent REAL,
                 ram_used INTEGER,
@@ -69,11 +71,14 @@ class MetricsDB:
         
         cursor.execute('''
             INSERT INTO metrics 
-            (cpu_percent, cpu_temp, ram_percent, ram_used, 
+            (cpu_percent, cpu_freq, cpu_freq_max,
+             cpu_temp, ram_percent, ram_used, 
              disk_percent, disk_used, power_consumption)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             data['cpu_percent'],
+            data['cpu_freq'],
+            data['cpu_freq_max'],
             data['cpu_temp'],
             data['ram_percent'],
             data['ram_used'],
@@ -158,3 +163,14 @@ class MetricsDB:
         metric = dict(cursor.fetchone() or {})
         conn.close()
         return metric
+    
+    def get_system_info(self):
+        """Obtener la última métrica registrada"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM system_info ')
+        info = dict(cursor.fetchone() or {})
+        conn.close()
+        return info
