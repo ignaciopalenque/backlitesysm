@@ -1,11 +1,10 @@
 import psutil
 import socket
-import os
 import re
 import subprocess
 import platform
 import cpuinfo
-import GPUtil
+import time
 from datetime import datetime
 
 class SystemCollector:
@@ -53,7 +52,20 @@ class SystemCollector:
             return 130.0 # Promedio general Xeon
         
         if "EPYC" in cpu_name_upper: return 225.0
-        if "RASPBERRY" in cpu_name_upper or "ARM" in cpu_name_upper: return 7.0
+        
+
+            # ARM / Raspberry Pi
+        if "CORTEX-A53" in cpu_name_upper:
+            return 4.0   # Raspberry Pi 3
+
+        if "CORTEX-A72" in cpu_name_upper:
+            return 5.0   # Raspberry Pi 4 (algunas versiones)
+
+        if "CORTEX-A76" in cpu_name_upper:
+            return 10.0  # Raspberry Pi 5
+
+        if "RASPBERRY" in cpu_name_upper or "ARM" in cpu_name_upper or "CORTEX" in cpu_name_upper:
+            return 7.0   # ARM genérico
         
         # Gamas estándar
         if "I3" in cpu_name_upper: return 35.0
@@ -83,48 +95,46 @@ class SystemCollector:
     @staticmethod
     def get_device_info():
 
-          # Información de GPU (NVIDIA)
-        gpus = GPUtil.getGPUs()
         gpu_name = "N/A"
         vram_total = 0
         os_name = platform.system()
-        if gpus:
-            gpu_name = gpus[0].name
-            vram_total = gpus[0].memoryTotal
-        else:
-            if os_name == "Windows":
-            # Comando WMIC para obtener el nombre del controlador de video
-                comand = "wmic path win32_VideoController get name"
-                output = subprocess.check_output(comand, shell=True).decode('utf-8')
-                # Limpiamos el resultado (quitamos la cabecera 'Name' y espacios)
-                lines = [line.strip() for line in output.split('\n') if line.strip()]
+        cpu_name = cpuinfo.get_cpu_info().get('brand_raw', 'Unknown')
+        tdp = SystemCollector.get_tdp_smart(cpu_name)
+
+        if os_name == "Windows":
+            try:
+                command = "wmic path win32_VideoController get name"
+                output = subprocess.check_output(command, shell=True, stderr=subprocess.DEVNULL).decode("utf-8")
+                lines = [line.strip() for line in output.splitlines() if line.strip()]
                 if len(lines) > 1:
-                    gpu_name = lines[1] # La primera línea es el título "Name"
+                    gpu_name = lines[1]
+            except subprocess.CalledProcessError:
+                pass
 
-            elif os_name == "Linux":
-                # Comando lspci para buscar dispositivos VGA o 3D
-                comand = "lspci | grep -Ei 'vga|3d|display'"
-                output = subprocess.check_output(comand, shell=True).decode('utf-8')
-                
-                if output:
-                    # Tomamos la primera línea y extraemos el nombre después de ':'
-                    gpu_name = output.split('r:', 1)[1].strip()
+        elif os_name == "Linux":
+            try:
+                output = subprocess.check_output(["lspci"], text=True, stderr=subprocess.DEVNULL)
+                for line in output.splitlines():
+                    lower = line.lower()
+                    if "vga compatible controller" in lower or "3d controller" in lower or "display controller" in lower:
+                        gpu_name = line.split(": ", 1)[-1].strip()
+                        break
+            except Exception:
+                pass
 
-
-        # Recolección de datos
         data = {
             'hostname': socket.gethostname(),
             'os': f"{platform.system()} {platform.release()}",
-            'cpu_name': cpuinfo.get_cpu_info().get('brand_raw', "Unknown"),
-            'disk_total': psutil.disk_usage('/').total, # Bytes
-            'ram_total': psutil.virtual_memory().total,   # Bytes
+            'cpu_name': cpu_name,
+            'cpu_tpd': tdp,
+            'disk_total': psutil.disk_usage('/').total,
+            'ram_total': psutil.virtual_memory().total,
             'gpu_name': gpu_name,
             'vram_total': vram_total,
             'last_update': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         return data
-        
-      
+
     
     @staticmethod
     def get_cpu_temperature():
@@ -167,6 +177,87 @@ class SystemCollector:
             'free': disk.free
         }
     
+    @staticmethod
+    def insert_network_metrics_by_interface(db):
+        print("insert_network_metrics_by_interface")
+        networks = psutil.net_io_counters(pernic=True)
+        ip = SystemCollector.get_local_ip()
+        iface = SystemCollector.get_default_interface(ip)
+        mac = SystemCollector.get_ip_and_mac_by_interface(iface)[1]
+
+        network_default = networks.get(iface)
+
+        if network_default is None:
+            return
+
+        data = {
+                'date': datetime.now().strftime("%Y-%m-%d"),
+                'interface': iface,
+                'ip_address': ip,
+                'mac_address': mac,
+                'bytes_sent': network_default.bytes_sent / (1024 ** 3),
+                'bytes_recv': network_default.bytes_recv / (1024 ** 3),
+                'upload_bps': network_default.packets_sent,
+                'download_bps': network_default.packets_recv
+                
+            }
+        db.insert_network_metrics(data)
+        print(data)
+
+    
+    @staticmethod
+    def get_ip_and_mac_by_interface(interface_name):
+        ip = None
+        mac = None
+
+        addrs = psutil.net_if_addrs().get(interface_name, [])
+        mac_families = {
+            getattr(socket, "AF_LINK", None),
+            getattr(socket, "AF_PACKET", None),
+        }
+
+        for addr in addrs:
+            if addr.family == socket.AF_INET:
+                ip = addr.address
+            elif addr.family in mac_families:
+                mac = addr.address
+
+        return ip, mac
+    
+    @staticmethod
+    def get_local_ip():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+
+    @staticmethod
+    def get_local_mac_by_interface(interface=None):
+        addrs = psutil.net_if_addrs()
+
+        if interface:
+            for addr in addrs.get(interface, []):
+                if getattr(addr, "family", None) == psutil.AF_LINK:
+                    return addr.address
+            return None
+
+        for if_addrs in addrs.values():
+            for addr in if_addrs:
+                if getattr(addr, "family", None) == psutil.AF_LINK:
+                    return addr.address
+
+        return None
+        
+    @staticmethod
+    def get_default_interface(local_ip):
+        for iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET and addr.address == local_ip:
+                    return iface
+        return None
+        
     @staticmethod
     def get_power_consumption():
         """Estimar consumo eléctrico (requiere configuración adicional)"""
@@ -251,7 +342,44 @@ class SystemCollector:
         # reverse=True para que los 5 más demandantes queden arriba
         top_process = sorted(process, key=lambda x: x['cpu_percent'], reverse=True)[:5]
         
-        return top_process  
+        return top_process
+    
+
+   
+  
+
+    @staticmethod
+    def get_network_counter_speed():
+
+        ip = SystemCollector.get_local_ip()
+        iface = SystemCollector.get_default_interface(ip)
+    
+        # Primera lectura
+        io1 = psutil.net_io_counters(pernic=True)[iface]
+        t1 = time.time()
+
+        time.sleep(1)
+
+        # Segunda lectura
+        io2 = psutil.net_io_counters(pernic=True)[iface]
+        t2 = time.time()
+
+        # Intervalo real
+        dt = t2 - t1
+
+        # Velocidad en Bytes/s
+        download_bps = (io2.bytes_recv - io1.bytes_recv) / dt
+        upload_bps = (io2.bytes_sent - io1.bytes_sent) / dt
+    
+        return {
+            "interface": iface,
+            "ip": ip,
+            "download_mbps": round(download_bps / (1024 * 1024), 2),
+            "upload_mbps": round(upload_bps / (1024 * 1024), 2),
+            "total_download_mb":round(io2.bytes_recv / (1024 * 1024), 2),
+            "total_upload_mb": round(io2.bytes_sent / (1024 * 1024), 2)
+        }
+    
     
     @staticmethod
     def collect_all():
@@ -276,3 +404,5 @@ class SystemCollector:
             'disk_total': disk['total'],
             'power_consumption': power
         }
+    
+

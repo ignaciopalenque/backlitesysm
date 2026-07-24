@@ -1,12 +1,32 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from models import MetricsDB
 from collectorService import SystemCollector
 import threading
 import time
+import json
 from datetime import datetime
+from dotenv import load_dotenv
+import os
+import subprocess
 
-app = Flask(__name__)
+
+load_dotenv()
+
+FRONTEND_PATH = os.getenv("FRONTEND_PATH")
+
+
+'''
+Con este código comprobamos si FRONTEND_PATH no esta definida
+if not FRONTEND_PATH:
+    raise RuntimeError("FRONTEND_PATH no está definida")
+
+if not os.path.isdir(FRONTEND_PATH):
+    raise RuntimeError(f"FRONTEND_PATH no existe o no es un directorio: {FRONTEND_PATH}")
+
+'''
+
+app = Flask(__name__,static_folder=FRONTEND_PATH, static_url_path="")
 CORS(app)
 
 # Inicializar base de datos
@@ -19,6 +39,7 @@ buffer_kwh = 0.0
 buffer_horas = 0.0
 contador_ciclos = 0
 intervalo_escritura = 12
+
 
 def collect_metrics_loop(interval=5):
     """Ejecutar recopilación de métricas en background"""
@@ -46,8 +67,9 @@ def collect_metrics_loop(interval=5):
             if contador_ciclos >= intervalo_escritura:
                 datos_coste = {
                     'date': datetime.now().strftime("%Y-%m-%d"),
-                    'energy_kwh': buffer_kwh,
-                    'hours': buffer_horas
+                    'energy_kwh': round(buffer_kwh, 6), 
+                    'hours': round(buffer_horas, 2)
+                    
                 }
                 
                 db.insert_cost(datos_coste) # Escribimos en disco una sola vez
@@ -56,7 +78,9 @@ def collect_metrics_loop(interval=5):
                 buffer_kwh = 0.0
                 buffer_horas = 0.0
                 contador_ciclos = 0
-                print("Datos de consumo acumuladosguardados en la base de datos.")
+                
+                SystemCollector.insert_network_metrics_by_interface(db)
+                print("Datos de consumo y red acumuladosguardados en la base de datos.")
 
 
 
@@ -74,6 +98,7 @@ def collect_metrics_loop(interval=5):
             print("-" * 55)
 
             time.sleep(interval)
+
         except Exception as e:
             print(f"Error en recopilación: {e}")
             time.sleep(interval)
@@ -91,6 +116,73 @@ def get_latest_metrics():
     if metric:
         return jsonify(metric)
     return jsonify({'error': 'No metrics available'}), 404
+
+@app.route('/api/diary/cost', methods=['GET'])
+def get_diary_cost():
+    """Obtener la última métrica"""
+    diary_cost = db.get_diary_cost()
+    print(diary_cost)
+    if diary_cost:
+
+        with open('config_cost.json', 'r') as f:
+            config_cost = json.load(f)
+        
+        if config_cost is None:
+            return jsonify(diary_cost)
+        
+        if config_cost['p1'] == 0 and config_cost['p2'] == 0 and config_cost['p3'] == 0:
+            
+            precio_kwh = config_cost["precio_kwh"]
+            coste_base = diary_cost["energy_kwh"] * precio_kwh               
+            iva = config_cost["iva"]
+            coste_con_iva = coste_base * (1 + iva)
+
+            coste_hora = coste_base / diary_cost["hours"]
+          
+
+            """Coste diario estimado con 24h"""
+            coste_base_24 = coste_hora * 24 
+            coste_con_iva_24 = coste_base_24 * (1 + iva)
+
+            """Coste mensual estimado"""
+            coste_base_mensual = coste_base_24 * 30
+            coste_con_iva_mensual = coste_base_mensual * (1 + iva)
+
+            """Coste anual estimado"""
+            coste_base_anual = coste_base_24 * 365
+            coste_con_iva_anual = coste_base_anual * (1 + iva) 
+
+            cost={"cost":(f"{coste_con_iva:.8f}")}
+            cost_24={"cost_24":(f"{coste_con_iva_24:.8f}")}
+            cost_mensual={"cost_mensual":(f"{coste_con_iva_mensual:.8f}")}
+            cost_anual={"cost_anual":(f"{coste_con_iva_anual:.8f}")}
+
+            diary_cost.update(cost)
+            diary_cost.update(cost_24)
+            diary_cost.update(cost_mensual)
+            diary_cost.update(cost_anual)
+
+
+            return jsonify(diary_cost)
+
+        
+
+        
+
+
+        return jsonify(diary_cost)
+    return jsonify({'error': 'No diary cost available'}), 404
+
+
+@app.route('/api/diary/network', methods=['GET'])
+def get_diary_network():
+    print("diary network")
+    diary_network = db.get_diary_network()
+    if diary_network:
+        return jsonify(diary_network)
+
+
+
 
 @app.route('/api/system/info', methods=['GET'])
 def get_system_info():
@@ -113,6 +205,26 @@ def get_metrics_history_custom(hours):
         return jsonify({'error': 'Invalid hours range'}), 400
     
     metrics = db.get_metrics(hours=hours)
+    return jsonify(metrics)
+
+@app.route('/api/metrics/network/history/<int:hours>', methods=['GET'])
+def get_metrics_network_history_custom(hours):
+    """Obtener histórico de N horas"""
+    if hours < 1 or hours > 720:  # Máximo 30 días
+        return jsonify({'error': 'Invalid hours range'}), 400
+    
+    metrics = db.get_metrics_network_filter_wl_eth(hours=hours)
+    return jsonify(metrics)
+
+@app.route('/api/metrics/network/history/iface/<int:hours>', methods=['GET'])
+def get_metrics_network_history_iface(hours):
+    """Obtener histórico de N horas"""
+    if hours < 1 or hours > 720:  # Máximo 30 días
+        return jsonify({'error': 'Invalid hours range'}), 400
+    
+    iface = SystemCollector.get_default_interface(SystemCollector.get_local_ip())
+    print(iface)
+    metrics = db.get_metrics_network_filter_iface(hours=hours, iface=iface)
     return jsonify(metrics)
 
 @app.route('/api/status', methods=['GET'])
@@ -162,6 +274,15 @@ def get_process_top():
             return jsonify(process_format) # Devolvemos la lista completa
     except Exception as e:
             return jsonify({'error': str(e)}), 500
+    
+
+@app.route('/api/network/counter/speed', methods=['GET'])
+def get_network_counter_speed():
+    try:
+        speed = SystemCollector.get_network_counter_speed()
+        return jsonify(speed)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -172,10 +293,23 @@ def health_check():
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404
 
+@app.route("/")
+def index():
+    return send_from_directory(app.static_folder, "index.html")
+
+@app.route("/<path:path>")
+def serve_static(path):
+    return send_from_directory(app.static_folder, path)
+
 if __name__ == '__main__':
     try:
-        # En desarrollo
+
+
         app.run(host='0.0.0.0', port=5000, debug=False)
+
+       
+
+ 
         
         # En producción usar Gunicorn:
         # gunicorn -w 4 -b 0.0.0.0:5000 app:app

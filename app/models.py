@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime
 
+
 class MetricsDB:
     def __init__(self, db_path='litesysm.db'):
         self.db_path = db_path
@@ -26,6 +27,19 @@ class MetricsDB:
                 power_consumption REAL
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS network_metrics (
+                date TEXT PRIMARY KEY,
+                interface TEXT,
+                ip_address TEXT,
+                mac_address TEXT,
+                bytes_sent INTEGER,
+                bytes_recv INTEGER,
+                upload_bps REAL,
+                download_bps REAL
+            )
+        ''')
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS system_info (
@@ -33,6 +47,7 @@ class MetricsDB:
                 hostname TEXT,
                 os TEXT,
                 cpu_name TEXT,
+                cpu_tpd INTEGER,
                 disk_total INTEGER,
                 ram_total INTEGER,
                 gpu_name TEXT,
@@ -120,13 +135,14 @@ class MetricsDB:
         
         cursor.execute('''
             INSERT INTO system_info 
-            (hostname, os, cpu_name, disk_total, 
+            (hostname, os, cpu_name, cpu_tpd, disk_total, 
              ram_total, gpu_name, vram_total, last_update)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             data['hostname'],
             data['os'],
             data['cpu_name'],
+            data['cpu_tpd'],
             data['disk_total'],
             data['ram_total'],
             data['gpu_name'],
@@ -136,6 +152,35 @@ class MetricsDB:
         
         conn.commit()
         conn.close()
+
+
+    def insert_network_metrics(self, data):
+        """Insertar una nueva métrica"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO network_metrics 
+            (date,interface, ip_address, mac_address, bytes_sent, bytes_recv, upload_bps, download_bps)
+            VALUES (?,?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(date) 
+                DO UPDATE SET 
+                    bytes_sent = excluded.bytes_sent,
+                    bytes_recv = excluded.bytes_recv 
+        ''', (
+            data['date'],
+            data['interface'],
+            data['ip_address'],
+            data['mac_address'],
+            data['bytes_sent'],
+            data['bytes_recv'],
+            data['upload_bps'],
+            data['download_bps']
+        ))
+        
+        conn.commit()
+        conn.close()
+    
     
     def get_metrics(self, hours=24):
         """Obtener métricas de las últimas N horas"""
@@ -153,6 +198,19 @@ class MetricsDB:
         conn.close()
         return metrics
     
+    def get_diary_network(self):
+           """Obtener la última métrica registrada"""
+           conn = sqlite3.connect(self.db_path)
+           conn.row_factory = sqlite3.Row
+           cursor = conn.cursor()
+           
+           cursor.execute('SELECT * FROM network_metrics ORDER BY date DESC LIMIT 1')
+           diary_network = dict(cursor.fetchone() or {})
+           conn.close()
+           return diary_network
+
+    
+
     def get_latest_metric(self):
         """Obtener la última métrica registrada"""
         conn = sqlite3.connect(self.db_path)
@@ -163,6 +221,17 @@ class MetricsDB:
         metric = dict(cursor.fetchone() or {})
         conn.close()
         return metric
+    
+    def get_diary_cost(self):
+        """Obtener la última métrica registrada"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM diary_cost ORDER BY date DESC LIMIT 1')
+        diary_cost = dict(cursor.fetchone() or {})
+        conn.close()
+        return diary_cost
     
     def get_system_info(self):
         """Obtener la última métrica registrada"""

@@ -1,2 +1,3 @@
 app/litesysm.db
 *.db
+.env
