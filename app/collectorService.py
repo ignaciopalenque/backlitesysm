@@ -5,9 +5,21 @@ import subprocess
 import platform
 import cpuinfo
 import time
+from pathlib import Path
 from datetime import datetime
+from dotenv import load_dotenv
+import dbus
+import ipaddress
+import os
+import nmap
 
 class SystemCollector:
+
+    load_dotenv()
+
+    APP_MODE = os.getenv("APP_MODE")
+    CPU_INFO = cpuinfo.get_cpu_info()
+    TEMPS = psutil.sensors_temperatures()
 
 
 
@@ -98,7 +110,7 @@ class SystemCollector:
         gpu_name = "N/A"
         vram_total = 0
         os_name = platform.system()
-        cpu_name = cpuinfo.get_cpu_info().get('brand_raw', 'Unknown')
+        cpu_name = SystemCollector.CPU_INFO.get('brand_raw', 'Unknown')
         tdp = SystemCollector.get_tdp_smart(cpu_name)
 
         if os_name == "Windows":
@@ -135,18 +147,51 @@ class SystemCollector:
         }
         return data
 
-    
+    @staticmethod
+    def get_profile_linux():
+        try:
+             bus = dbus.SystemBus()
+             obj = bus.get_object(
+                        "net.hadess.PowerProfiles",
+                        "/net/hadess/PowerProfiles"
+                    )
+            
+             iface = dbus.Interface(
+                        obj,
+                        "org.freedesktop.DBus.Properties"
+                    )
+             profile = iface.Get(
+                "net.hadess.PowerProfiles",
+                "ActiveProfile"
+            )
+
+            
+             return str(iface.Get(
+                        "net.hadess.PowerProfiles",
+                        "ActiveProfile"
+                    ))
+                
+        except Exception as e:
+            print(e)
+            return "N/A"
+       
     @staticmethod
     def get_cpu_temperature():
         """Obtener temperatura del CPU (específico para Raspberry Pi)"""
         try:
-            # Raspberry Pi
+            # Linux
+            '''
             with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
                 temp = int(f.read()) / 1000.0
             return temp
+            '''
+            return float(Path("/sys/class/thermal/thermal_zone0/temp").read_text().strip()) / 1000
+
         except:
             try:
-                # Alternativa: comando vcgencmd
+                # Alternativa: psutil y comando vcgencmd
+                if SystemCollector.TEMPS is not None:
+                    return SystemCollector.TEMPS
                 output = subprocess.check_output(['vcgencmd', 'measure_temp']).decode()
                 temp = float(output.split('=')[1].split("'")[0])
                 return temp
@@ -179,7 +224,7 @@ class SystemCollector:
     
     @staticmethod
     def insert_network_metrics_by_interface(db):
-        print("insert_network_metrics_by_interface")
+
         networks = psutil.net_io_counters(pernic=True)
         ip = SystemCollector.get_local_ip()
         iface = SystemCollector.get_default_interface(ip)
@@ -202,9 +247,102 @@ class SystemCollector:
                 
             }
         db.insert_network_metrics(data)
-        print(data)
 
-    
+        if SystemCollector.APP_MODE == 'dev':
+            print("Insertadas metricas de red",data)
+
+
+    @staticmethod
+    def get_network_metrics_by_interface():
+
+        networks = psutil.net_io_counters(pernic=True)
+        ip = SystemCollector.get_local_ip()
+        iface = SystemCollector.get_default_interface(ip)
+        mac = SystemCollector.get_ip_and_mac_by_interface(iface)[1]
+
+        network_default = networks.get(iface)
+
+        if network_default is None:
+            return
+
+        data = {
+                'date': datetime.now().strftime("%Y-%m-%d"),
+                'interface': iface,
+                'ip_address': ip,
+                'mac_address': mac,
+                'bytes_sent': network_default.bytes_sent / (1024 ** 3),
+                'bytes_recv': network_default.bytes_recv / (1024 ** 3),
+                'upload_bps': network_default.packets_sent,
+                'download_bps': network_default.packets_recv
+                
+            }
+
+        return data
+    @staticmethod
+    def get_boot_time():
+        try:
+            boot_time = psutil.boot_time()
+            uptime = datetime.now() - datetime.fromtimestamp(boot_time)
+            mins = int(uptime.total_seconds() // 60)
+            hours = mins // 60
+            minutes = mins % 60
+            return hours, minutes   
+        except:
+            minutes = 0
+            hours = 0
+            return hours, minutes
+
+
+    @staticmethod
+    def get_energy_plan():
+        try:
+            os_name = platform.system()
+            cpu_name = SystemCollector.CPU_INFO.get('brand_raw', 'Unknown')
+
+            plan = ""
+            if os_name == "Windows":
+                output = subprocess.check_output(
+                    ["powercfg", "/getactivescheme"],
+                    text=True,
+                    encoding="utf-8",
+                    errors="ignore"
+                )
+                m = re.search(r"\(([^)]+)\)$", output.strip())
+                plan = m.group(1) if m else output.strip()
+
+            elif 'CORTEX-A53' in cpu_name.upper() or 'CORTEX-A72' in cpu_name.upper() or 'CORTEX-A76' in cpu_name.upper():
+
+                 output = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").read_text().strip()
+                 plan = output
+
+            elif os_name == "Linux":
+                profile = SystemCollector.get_profile_linux()
+
+                if profile is not None:
+                    plan = profile
+                else:
+                    plan = subprocess.check_output(["powerprofilesctl", "get"], text=True).strip()
+
+
+            """
+            Traducción de planes en el backend. Ya implementado en el front
+            match plan:
+                            case "performance":
+                                return plan + " (Rendimiento)"
+                            case "balanced":
+                                return plan + " (Equilibrado)"
+                            case "power-saver":
+                                return plan + " (Ahorro de energía)"
+                            case _:
+                                return plan
+            """
+            
+
+            return plan
+
+        except:
+            plan_energy = 0
+            return plan_energy
     @staticmethod
     def get_ip_and_mac_by_interface(interface_name):
         ip = None
@@ -232,6 +370,10 @@ class SystemCollector:
             return s.getsockname()[0]
         finally:
             s.close()
+
+
+
+
 
     @staticmethod
     def get_local_mac_by_interface(interface=None):
@@ -263,6 +405,9 @@ class SystemCollector:
         """Estimar consumo eléctrico (requiere configuración adicional)"""
         # Opción 1: Lectura de fichero de energía si está disponible
         try:
+            cpu_name = platform.processor().upper()
+           
+
             with open('/sys/class/power_supply/mains/power_now', 'r') as f:
                 power = int(f.read()) / 1000000  # Convertir a W
             return power
@@ -278,27 +423,90 @@ class SystemCollector:
             base_power = 1
             max_power = 20
             pbase = 5
+            freq = psutil.cpu_freq()
             cpu_freq = psutil.cpu_freq().current
             cpu_freq_max = psutil.cpu_freq().max
             cpu_freq_factor = 0.35 + 0.65 * (cpu_freq / cpu_freq_max)
-            cpu_power = base_power + (max_power - base_power) * (cpu_percent / 100) * cpu_freq_factor
 
+
+            # Raspberry Pi 3
+            if "CORTEX-A53" in cpu_name:
+                base_power = 2.5
+                max_power = 5.0
+                pbase = 0
+
+                if freq and cpu_freq_max > 0 and cpu_freq != cpu_freq_max:
+                    cpu_freq_factor = 0.35 + 0.65 * (freq.current / freq.max)
+                else:
+                    cpu_freq_factor = 1.0
+
+            # Raspberry Pi 4
+            elif "CORTEX-A72" in cpu_name:
+                base_power = 3.5
+                max_power = 7.0
+                pbase = 0
+
+                if freq and cpu_freq_max > 0 and cpu_freq != cpu_freq_max:
+                    cpu_freq_factor = 0.35 + 0.65 * (freq.current / freq.max)
+                else:
+                    cpu_freq_factor = 1.0
+
+            # Raspberry Pi 5
+            elif "CORTEX-A76" in cpu_name:
+                base_power = 4.5
+                max_power = 12.0
+                pbase = 0
+                
+                if freq and cpu_freq_max > 0 and cpu_freq != cpu_freq_max:
+                    cpu_freq_factor = 0.35 + 0.65 * (freq.current / freq.max)
+                else:
+                    cpu_freq_factor = 1.0
+
+
+
+
+            cpu_power = base_power + (max_power - base_power) * (cpu_percent / 100) * cpu_freq_factor
             estimated = pbase + cpu_power 
 
             #estimated = pbase + base_power + (cpu_percent / 100) * (max_power - base_power) * cpu_freq_factor 
-            print("El uso de la CPU es ", cpu_percent ,"% ", "La frecuencia maxima es ", cpu_freq_max, "Hz y la frecuencia actual es ", cpu_freq, "Hz El consumo estimado es ", round(estimated, 2), " W") #print(estimated)
+            if SystemCollector.APP_MODE == 'dev':
+                print("El uso de la CPU es ", cpu_percent ,"% ", "La frecuencia maxima es ", cpu_freq_max, "Hz y la frecuencia actual es ", cpu_freq, "Hz El consumo estimado es ", round(estimated, 2), " W") #print(estimated)
+
+
             return round(estimated, 2)
         
     @staticmethod
     def calculate_power_consumption():
         # 1. Obtener datos del hardware
-        cpu_name = cpuinfo.get_cpu_info().get('brand_raw', 'Unknown')
-        tdp = SystemCollector.get_tdp_smart(cpu_name)
+        cpu_name = SystemCollector.CPU_INFO.get('brand_raw', 'Unknown')
         
-        # 2. Parámetros estandarizados basados en TDP
-        p_base = 5.0             # Consumo base de placa/RAM (estimado laptop)
-        p_idle = tdp * 0.15      # El reposo es aprox 15% del TDP
-        p_max = tdp * 1.1        # El máximo es TDP + margen de Turbo
+          # 2. Perfil energético según CPU ARM
+        if "CORTEX-A53" in cpu_name:
+            # Raspberry Pi 3 B
+            p_base = 1.5       # placa, RAM, periféricos
+            p_idle = 2.5       # consumo reposo
+            p_max = 5.0        # consumo carga máxima
+
+        elif "CORTEX-A72" in cpu_name:
+            # Raspberry Pi 4
+            p_base = 2.0
+            p_idle = 3.5
+            p_max = 7.0
+
+        elif "CORTEX-A76" in cpu_name:
+            # Raspberry Pi 5
+            p_base = 3.0
+            p_idle = 5.0
+            p_max = 12.0
+
+        else:
+            # Equipo genérico
+            tdp = SystemCollector.get_tdp_smart(cpu_name)
+            p_base = 5.0
+            p_idle = tdp * 0.15
+            p_max = tdp * 1.1
+
+            
         
         # 3. Métricas actuales
         cpu_percent = psutil.cpu_percent(interval=0.1)
@@ -315,14 +523,16 @@ class SystemCollector:
         cpu_power = p_idle + (p_max - p_idle) * (cpu_percent / 100) * freq_factor
         estimated_total = p_base + cpu_power
 
-        print(f"CPU: {cpu_name} | TDP Est: {tdp}W")
-        print(f"Uso: {cpu_percent}% | Frec: {freq.current:.0f}/{freq.max:.0f}MHz")
-        print(f"Consumo Estimado: {round(estimated_total, 2)} W")
+
+        if SystemCollector.APP_MODE == 'dev':
+            print(f"CPU: {cpu_name} | TDP Est: {tdp}W")
+            print(f"Uso: {cpu_percent}% | Frec: {freq.current:.0f}/{freq.max:.0f}MHz")
+            print(f"Consumo Estimado: {round(estimated_total, 2)} W")
         
         return round(estimated_total, 2) 
 
     @staticmethod
-    def get_top_process():
+    def get_top_process_old():
         """Obtener proceso principal"""
         process = []
 
@@ -343,11 +553,36 @@ class SystemCollector:
         top_process = sorted(process, key=lambda x: x['cpu_percent'], reverse=True)[:5]
         
         return top_process
-    
 
-   
-  
 
+    @staticmethod
+    def get_top_process():
+        process = []
+
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                proc.cpu_percent(None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        time.sleep(0.2)
+        cpu_count = psutil.cpu_count() or 1
+
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                cpu_raw = proc.cpu_percent(None)
+                mem = proc.memory_info().rss / (1024 * 1024)
+
+                process.append({
+                    'pid': proc.info['pid'],
+                    'name': proc.info['name'],
+                    'cpu_percent': round(cpu_raw / cpu_count, 2),
+                    'memory_mb': round(mem, 2)
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, AttributeError):
+                continue
+
+        return sorted(process, key=lambda x: x['cpu_percent'], reverse=True)[:5]
     @staticmethod
     def get_network_counter_speed():
 
@@ -379,7 +614,81 @@ class SystemCollector:
             "total_download_mb":round(io2.bytes_recv / (1024 * 1024), 2),
             "total_upload_mb": round(io2.bytes_sent / (1024 * 1024), 2)
         }
+
     
+    @staticmethod
+    def get_network_ip_mask():
+        addrs = psutil.net_if_addrs()
+
+        for iface, addr_list in addrs.items():
+            for addr in addr_list:
+                if addr.family == socket.AF_INET and addr.address and addr.netmask and addr.netmask != '0.0.0.0' and addr.address != '127.0.0.1':
+                    network = ipaddress.ip_network(
+                        f"{addr.address}/{addr.netmask}",
+                        strict=False
+                    )
+
+                    return str(network)
+
+        return None
+
+    @staticmethod
+    def discover_hosts():
+        network_cidr = SystemCollector.get_network_ip_mask()
+        nm = nmap.PortScanner()
+        nm.scan(hosts=network_cidr, arguments='-sn -R')
+
+        results = []
+        for host in nm.all_hosts():
+            results.append({
+                "ip": host,
+                "hostname": nm[host].hostname(),
+                "state": nm[host].state(),
+            })
+
+        return results
+
+    @staticmethod
+    def scan_services():
+        network_cidr = SystemCollector.get_network_ip_mask()
+
+        nm = nmap.PortScanner()
+        nm.scan(hosts=network_cidr, ports='21,22,80,443,445,3389', arguments='-sV --version-light --script vuln')
+
+        results = []
+
+        for host in nm.all_hosts():
+            host_info = {
+                "ip": host,
+                "hostname": nm[host].hostname(),
+                "state": nm[host].state(),
+                "protocols": []
+            }
+
+            for proto in nm[host].all_protocols():
+                proto_info = {
+                    "protocol": proto,
+                    "ports": []
+                }
+
+                for port in sorted(nm[host][proto].keys()):
+                    service = nm[host][proto][port]
+
+                    proto_info["ports"].append({
+                        "port": port,
+                        "state": service["state"],
+                        "service": service["name"],
+                        "product": service.get("product", ""),
+                        "version": service.get("version", ""),
+                        "extrainfo": service.get("extrainfo", ""),
+                        "scripts": service.get("script", {})
+                    })
+
+                host_info["protocols"].append(proto_info)
+
+            results.append(host_info)
+
+        return results
     
     @staticmethod
     def collect_all():
@@ -388,7 +697,6 @@ class SystemCollector:
         ram = SystemCollector.get_ram_metrics()
         disk = SystemCollector.get_disk_metrics()
         temp = SystemCollector.get_cpu_temperature()
-        #power = SystemCollector.get_power_consumption()
         power = SystemCollector.calculate_power_consumption()
         return {
             'timestamp': datetime.now().isoformat(),

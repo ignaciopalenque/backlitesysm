@@ -9,7 +9,8 @@ class MetricsDB:
     
     def init_db(self):
         """Crear tablas si no existen"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
+
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -69,177 +70,160 @@ class MetricsDB:
 
     
     def is_table_empty(self, table_name):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Buscamos solo 1 registro. Si existe, la tabla no está vacía.
-        cursor.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
-        result = cursor.fetchone()
-        
-        conn.close()
-        return result is None  # Retorna True si está vacía, False si tiene datos
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            cursor = conn.cursor()
+            
+            # Buscamos solo 1 registro. Si existe, la tabla no está vacía.
+            cursor.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+            result = cursor.fetchone()
+            
+            return result is None  # Retorna True si está vacía, False si tiene datos
     
     def insert_metric(self, data):
         """Insertar una nueva métrica"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO metrics 
-            (cpu_percent, cpu_freq, cpu_freq_max,
-             cpu_temp, ram_percent, ram_used, 
-             disk_percent, disk_used, power_consumption)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            data['cpu_percent'],
-            data['cpu_freq'],
-            data['cpu_freq_max'],
-            data['cpu_temp'],
-            data['ram_percent'],
-            data['ram_used'],
-            data['disk_percent'],
-            data['disk_used'],
-            data['power_consumption']
-        ))
-        
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO metrics 
+                (cpu_percent, cpu_freq, cpu_freq_max,
+                cpu_temp, ram_percent, ram_used, 
+                disk_percent, disk_used, power_consumption)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                data['cpu_percent'],
+                data['cpu_freq'],
+                data['cpu_freq_max'],
+                data['cpu_temp'],
+                data['ram_percent'],
+                data['ram_used'],
+                data['disk_percent'],
+                data['disk_used'],
+                data['power_consumption']
+            ))
+            
+         
 
 
     def insert_cost(self, data):
         """Insertar un coste diario de energía"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO diary_cost (date, energy_kwh, hours)
-            VALUES (?, ?, ?) 
-            ON CONFLICT(date) 
-            DO UPDATE SET 
-                energy_kwh = energy_kwh + excluded.energy_kwh,
-                hours = hours + excluded.hours
-        ''', (
-            data['date'],
-            data['energy_kwh'],
-            data['hours']
-        ))
-        
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO diary_cost (date, energy_kwh, hours)
+                VALUES (?, ?, ?) 
+                ON CONFLICT(date) 
+                DO UPDATE SET 
+                    energy_kwh = energy_kwh + excluded.energy_kwh,
+                    hours = hours + excluded.hours
+            ''', (
+                data['date'],
+                data['energy_kwh'],
+                data['hours']
+            ))
+            
+          
 
 
     def insert_info(self, data):
         """Insertar una nueva métrica"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO system_info 
+                (hostname, os, cpu_name, cpu_tpd, disk_total, 
+                ram_total, gpu_name, vram_total, last_update)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                data['hostname'],
+                data['os'],
+                data['cpu_name'],
+                data['cpu_tpd'],
+                data['disk_total'],
+                data['ram_total'],
+                data['gpu_name'],
+                data['vram_total'],
+                data['last_update']
+            ))
+            
         
-        cursor.execute('''
-            INSERT INTO system_info 
-            (hostname, os, cpu_name, cpu_tpd, disk_total, 
-             ram_total, gpu_name, vram_total, last_update)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            data['hostname'],
-            data['os'],
-            data['cpu_name'],
-            data['cpu_tpd'],
-            data['disk_total'],
-            data['ram_total'],
-            data['gpu_name'],
-            data['vram_total'],
-            data['last_update']
-        ))
-        
-        conn.commit()
-        conn.close()
-
 
     def insert_network_metrics(self, data):
         """Insertar una nueva métrica"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO network_metrics 
+                (date,interface, ip_address, mac_address, bytes_sent, bytes_recv, upload_bps, download_bps)
+                VALUES (?,?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date) 
+                    DO UPDATE SET 
+                        bytes_sent = excluded.bytes_sent,
+                        bytes_recv = excluded.bytes_recv 
+            ''', (
+                data['date'],
+                data['interface'],
+                data['ip_address'],
+                data['mac_address'],
+                data['bytes_sent'],
+                data['bytes_recv'],
+                data['upload_bps'],
+                data['download_bps']
+            ))
+            
         
-        cursor.execute('''
-            INSERT INTO network_metrics 
-            (date,interface, ip_address, mac_address, bytes_sent, bytes_recv, upload_bps, download_bps)
-            VALUES (?,?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(date) 
-                DO UPDATE SET 
-                    bytes_sent = excluded.bytes_sent,
-                    bytes_recv = excluded.bytes_recv 
-        ''', (
-            data['date'],
-            data['interface'],
-            data['ip_address'],
-            data['mac_address'],
-            data['bytes_sent'],
-            data['bytes_recv'],
-            data['upload_bps'],
-            data['download_bps']
-        ))
         
-        conn.commit()
-        conn.close()
-    
     
     def get_metrics(self, hours=24):
         """Obtener métricas de las últimas N horas"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute(f'''
-            SELECT * FROM metrics 
-            WHERE timestamp > datetime('now', '-{hours} hours')
-            ORDER BY timestamp DESC
-        ''')
-        
-        metrics = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return metrics
-    
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute(f'''
+                SELECT * FROM metrics 
+                WHERE timestamp > datetime('now', '-{hours} hours')
+                ORDER BY timestamp DESC
+            ''')
+            
+            return [dict(row) for row in cursor.fetchall()]    
     def get_diary_network(self):
            """Obtener la última métrica registrada"""
-           conn = sqlite3.connect(self.db_path)
-           conn.row_factory = sqlite3.Row
-           cursor = conn.cursor()
-           
-           cursor.execute('SELECT * FROM network_metrics ORDER BY date DESC LIMIT 1')
-           diary_network = dict(cursor.fetchone() or {})
-           conn.close()
-           return diary_network
+           with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT * FROM network_metrics ORDER BY date DESC LIMIT 1')
+            return dict(cursor.fetchone() or {})
 
     
 
     def get_latest_metric(self):
         """Obtener la última métrica registrada"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT * FROM metrics ORDER BY timestamp DESC LIMIT 1')
+            return dict(cursor.fetchone() or {})
         
-        cursor.execute('SELECT * FROM metrics ORDER BY timestamp DESC LIMIT 1')
-        metric = dict(cursor.fetchone() or {})
-        conn.close()
-        return metric
-    
     def get_diary_cost(self):
         """Obtener la última métrica registrada"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM diary_cost ORDER BY date DESC LIMIT 1')
-        diary_cost = dict(cursor.fetchone() or {})
-        conn.close()
-        return diary_cost
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT * FROM diary_cost ORDER BY date DESC LIMIT 1')
+            return dict(cursor.fetchone() or {})
     
     def get_system_info(self):
         """Obtener la última métrica registrada"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM system_info ')
-        info = dict(cursor.fetchone() or {})
-        conn.close()
-        return info
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT * FROM system_info ')
+            return dict(cursor.fetchone() or {})

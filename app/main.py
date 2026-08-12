@@ -14,6 +14,7 @@ import subprocess
 load_dotenv()
 
 FRONTEND_PATH = os.getenv("FRONTEND_PATH")
+APP_MODE = os.getenv("APP_MODE")
 
 
 '''
@@ -45,6 +46,8 @@ def collect_metrics_loop(interval=5):
     """Ejecutar recopilación de métricas en background"""
     global collecting, buffer_kwh, buffer_horas, contador_ciclos
     device_info = SystemCollector.get_device_info()
+
+    SystemCollector.scan_services()
 
     if db.is_table_empty('system_info'):
         db.insert_info(device_info)
@@ -80,22 +83,29 @@ def collect_metrics_loop(interval=5):
                 contador_ciclos = 0
                 
                 SystemCollector.insert_network_metrics_by_interface(db)
-                print("Datos de consumo y red acumuladosguardados en la base de datos.")
+                if APP_MODE == "dev":
+                    print("Datos de consumo y red acumuladosguardados en la base de datos.")
 
 
-
-            print(f"[{datetime.now()}] Métricas registradas")
-            print("-" * 55)
-            print(f"{'PID':<10} {'Nombre':<25} {'CPU %':<10} {'RAM (MB)':<10}")
-            print("-" * 55)
+            if APP_MODE == "dev":
+                print(f"[{datetime.now()}] Métricas registradas")
+                print("-" * 55)
+                print(f"{'PID':<10} {'Nombre':<25} {'CPU %':<10} {'RAM (MB)':<10}")
+                print("-" * 55)
             
             # Nota: la primera llamada a cpu_percent suele dar 0.0, 
             # se recomienda llamar a psutil.cpu_percent(interval=1) antes o hacer un loop.
             top = SystemCollector.get_top_process()
             
             for p in top:
-                print(f"{p['pid']:<10} {p['name']:<25} {p['cpu_percent']:<10} {p['memory_mb']:<10.2f}")
-            print("-" * 55)
+                if APP_MODE == "dev":
+                    print(f"{p['pid']:<10} {p['name']:<25} {p['cpu_percent']:<10} {p['memory_mb']:<10.2f}")
+
+
+
+
+            if APP_MODE == "dev":
+                print("-" * 55)
 
             time.sleep(interval)
 
@@ -121,7 +131,7 @@ def get_latest_metrics():
 def get_diary_cost():
     """Obtener la última métrica"""
     diary_cost = db.get_diary_cost()
-    print(diary_cost)
+
     if diary_cost:
 
         with open('config_cost.json', 'r') as f:
@@ -157,11 +167,16 @@ def get_diary_cost():
             cost_mensual={"cost_mensual":(f"{coste_con_iva_mensual:.8f}")}
             cost_anual={"cost_anual":(f"{coste_con_iva_anual:.8f}")}
 
+
             diary_cost.update(cost)
             diary_cost.update(cost_24)
             diary_cost.update(cost_mensual)
             diary_cost.update(cost_anual)
 
+            boot_time_h, boot_time_m = SystemCollector.get_boot_time()
+
+            diary_cost.update({"boot_time_h": boot_time_h})
+            diary_cost.update({"boot_time_m":boot_time_m})
 
             return jsonify(diary_cost)
 
@@ -176,13 +191,27 @@ def get_diary_cost():
 
 @app.route('/api/diary/network', methods=['GET'])
 def get_diary_network():
-    print("diary network")
-    diary_network = db.get_diary_network()
+
+    '''Obtener el histórico de red desde la base de datos'''
+    '''diary_network = db.get_diary_network()'''
+
+
+    '''Obtener el histórico de red desde el servidor'''
+    diary_network = SystemCollector.get_network_metrics_by_interface()
     if diary_network:
         return jsonify(diary_network)
 
 
+@app.route('/api/network/discovery/hosts', methods=['GET'])
+def get_discovery_hosts():
+    hosts = SystemCollector.discover_hosts()
+    return jsonify(hosts)
 
+@app.route('/api/network/discovery/services', methods=['GET'])
+def get_discovery_services():
+    
+    hosts = SystemCollector.scan_services()
+    return jsonify(hosts)
 
 @app.route('/api/system/info', methods=['GET'])
 def get_system_info():
@@ -232,10 +261,15 @@ def get_status():
     """Obtener estado actual del sistema"""
     try:
         latest = db.get_latest_metric()
-        
+        """latest = SystemCollector.collect_all()"""
+        energy_plan = {"energy_plan":SystemCollector.get_energy_plan()}
+
+        latest.update(energy_plan)
         # Calcular promedios de la última hora
-        recent_metrics = db.get_metrics(hours=1)
         
+        '''
+        recent_metrics = db.get_metrics(hours=1)
+    
         if recent_metrics:
             avg_cpu = sum(m['cpu_percent'] for m in recent_metrics) / len(recent_metrics)
             avg_ram = sum(m['ram_percent'] for m in recent_metrics) / len(recent_metrics)
@@ -244,6 +278,12 @@ def get_status():
             avg_cpu = latest['cpu_percent']
             avg_ram = latest['ram_percent']
             max_temp = latest['cpu_temp']
+
+        '''
+
+        avg_cpu = latest['cpu_percent']
+        avg_ram = latest['ram_percent']
+        max_temp = latest['cpu_temp']
         
         return jsonify({
             'current': latest,
@@ -254,6 +294,7 @@ def get_status():
             }
         })
     except Exception as e:
+        print(e)
         return jsonify({'error': str(e)}), 500
     
 @app.route('/api/processtop', methods=['GET'])
@@ -270,7 +311,7 @@ def get_process_top():
                     'cpu_percent': p['cpu_percent'],
                     'memory_mb': round(p['memory_mb'], 2) # Redondeamos para que el JSON sea más limpio
                 })
-                
+
             return jsonify(process_format) # Devolvemos la lista completa
     except Exception as e:
             return jsonify({'error': str(e)}), 500
