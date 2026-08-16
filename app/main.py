@@ -47,7 +47,6 @@ def collect_metrics_loop(interval=5):
     global collecting, buffer_kwh, buffer_horas, contador_ciclos
     device_info = SystemCollector.get_device_info()
 
-    SystemCollector.scan_services()
 
     if db.is_table_empty('system_info'):
         db.insert_info(device_info)
@@ -204,14 +203,20 @@ def get_diary_network():
 
 @app.route('/api/network/discovery/hosts', methods=['GET'])
 def get_discovery_hosts():
-    hosts = SystemCollector.discover_hosts()
-    return jsonify(hosts)
+    if SystemCollector.nampIsIntall():
+        hosts = SystemCollector.discover_hosts()
+        return jsonify(hosts)
+    else:
+        return jsonify(mensaje="No se ha encontrado nmap instalado. Para instalarlo -> *Deb : sudo apt install nmap *Arch : sudo pacman -Sy nmap")
+    
 
 @app.route('/api/network/discovery/services', methods=['GET'])
 def get_discovery_services():
-    
-    hosts = SystemCollector.scan_services()
-    return jsonify(hosts)
+    if SystemCollector.nampIsIntall():
+        hosts = SystemCollector.scan_services()
+        return jsonify(hosts)
+    else:
+        return jsonify(mensaje="No se ha encontrado nmap instalado. Para instalarlo -> *Deb : sudo apt install nmap *Arch : sudo pacman -Sy nmap")
 
 @app.route('/api/system/info', methods=['GET'])
 def get_system_info():

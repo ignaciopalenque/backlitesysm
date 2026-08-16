@@ -3,6 +3,7 @@ import socket
 import re
 import subprocess
 import platform
+import shutil
 import cpuinfo
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ import dbus
 import ipaddress
 import os
 import nmap
+from nmap import PortScannerError
 
 class SystemCollector:
 
@@ -20,6 +22,33 @@ class SystemCollector:
     APP_MODE = os.getenv("APP_MODE")
     CPU_INFO = cpuinfo.get_cpu_info()
     TEMPS = psutil.sensors_temperatures()
+
+    @staticmethod
+    def nampIsIntall():
+        if os.path.exists("/usr/bin/nmap"):
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def install_nmap_system_deps():
+        if shutil.which("nmap") is None:
+            if platform.system().lower() == "linux":
+                    if shutil.which("apt-get") is not None or shutil.which("apt") is not None:
+                        # usa apt-get si existe
+                        apt_cmd = "apt-get" if shutil.which("apt-get") else "apt"
+                        subprocess.run(["sudo", apt_cmd, "update"])
+                        subprocess.run(["sudo", apt_cmd, "install", "-y", "nmap"])
+                        return
+
+                    if shutil.which("pacman") is not None:
+                        subprocess.run(["sudo", "pacman", "-Sy", "--noconfirm", "nmap"])
+                        return
+                    else:
+                        raise RuntimeError("No detecté apt-get ni pacman. Instala 'nmap' manualmente.")
+
+                 
+
 
 
 
@@ -634,61 +663,79 @@ class SystemCollector:
 
     @staticmethod
     def discover_hosts():
-        network_cidr = SystemCollector.get_network_ip_mask()
-        nm = nmap.PortScanner()
-        nm.scan(hosts=network_cidr, arguments='-sn -R')
+        try:
+            network_cidr = SystemCollector.get_network_ip_mask()
+            nm = nmap.PortScanner()
+            nm.scan(hosts=network_cidr, arguments='-sn -R')
 
-        results = []
-        for host in nm.all_hosts():
-            results.append({
-                "ip": host,
-                "hostname": nm[host].hostname(),
-                "state": nm[host].state(),
-            })
+            results = []
+            for host in nm.all_hosts():
+                results.append({
+                    "ip": host,
+                    "hostname": nm[host].hostname(),
+                    "state": nm[host].state(),
+                })
 
-        return results
+            return results
+        except PortScannerError as e:
+               msg = str(e)
+               if "nmap program was not found" not in msg.lower():
+                    raise  # error distinto, no lo manejamos
+
+               print("No está 'nmap' en el sistema. Intentando instalar...")
+               SystemCollector.install_nmap_system_deps()
+            
 
     @staticmethod
     def scan_services():
-        network_cidr = SystemCollector.get_network_ip_mask()
 
-        nm = nmap.PortScanner()
-        nm.scan(hosts=network_cidr, ports='21,22,80,443,445,3389', arguments='-sV --version-light --script vuln')
+        try:
+            network_cidr = SystemCollector.get_network_ip_mask()
 
-        results = []
+            nm = nmap.PortScanner()
+            nm.scan(hosts=network_cidr, ports='21,22,80,443,445,3389', arguments='-sV --open -Pn --max-retries 1 --min-rate 1000 --version-light --script vuln')
 
-        for host in nm.all_hosts():
-            host_info = {
-                "ip": host,
-                "hostname": nm[host].hostname(),
-                "state": nm[host].state(),
-                "protocols": []
-            }
+            results = []
 
-            for proto in nm[host].all_protocols():
-                proto_info = {
-                    "protocol": proto,
-                    "ports": []
+            for host in nm.all_hosts():
+                host_info = {
+                    "ip": host,
+                    "hostname": nm[host].hostname(),
+                    "state": nm[host].state(),
+                    "protocols": []
                 }
 
-                for port in sorted(nm[host][proto].keys()):
-                    service = nm[host][proto][port]
+                for proto in nm[host].all_protocols():
+                    proto_info = {
+                        "protocol": proto,
+                        "ports": []
+                    }
 
-                    proto_info["ports"].append({
-                        "port": port,
-                        "state": service["state"],
-                        "service": service["name"],
-                        "product": service.get("product", ""),
-                        "version": service.get("version", ""),
-                        "extrainfo": service.get("extrainfo", ""),
-                        "scripts": service.get("script", {})
-                    })
+                    for port in sorted(nm[host][proto].keys()):
+                        service = nm[host][proto][port]
 
-                host_info["protocols"].append(proto_info)
+                        proto_info["ports"].append({
+                            "port": port,
+                            "state": service["state"],
+                            "service": service["name"],
+                            "product": service.get("product", ""),
+                            "version": service.get("version", ""),
+                            "extrainfo": service.get("extrainfo", ""),
+                            "scripts": service.get("script", {})
+                        })
 
-            results.append(host_info)
+                    host_info["protocols"].append(proto_info)
 
-        return results
+                results.append(host_info)
+
+            return results
+        except PortScannerError as e:
+                       msg = str(e)
+                       if "nmap program was not found" not in msg.lower():
+                            raise  # error distinto, no lo manejamos
+        
+                       print("No está 'nmap' en el sistema. Intentando instalar...")
+                       SystemCollector.install_nmap_system_deps()
     
     @staticmethod
     def collect_all():
